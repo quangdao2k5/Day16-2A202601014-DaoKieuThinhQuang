@@ -91,4 +91,43 @@ class Critic(Middleware):
         #     claims = [], citations = [], và viết lại "answer" nói rõ là
         #     không đủ căn cứ.
         #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        if not isinstance(claims, list):
+            return report
+
+        def source_for(text):
+            if not isinstance(text, str) or not text or text not in ctx.observed_text:
+                return None
+            for doc in ctx.corpus.docs:
+                if doc.body in ctx.observed_text and any(text in line for line in doc.body.splitlines()):
+                    return doc.doc_id
+            return None
+
+        kept = []
+        split_conflict = False
+        for claim in claims:
+            text = claim.get("text") if isinstance(claim, dict) else None
+            if source_for(text) is not None:
+                kept.append(claim)
+                continue
+            if isinstance(text, str):
+                for index in range(len(text)):
+                    if not text.startswith(" và ", index):
+                        continue
+                    left, right = text[:index], text[index + 5:]
+                    left_doc, right_doc = source_for(left), source_for(right)
+                    if left_doc and right_doc and left_doc != right_doc:
+                        kept.extend(({"text": left, "doc_id": left_doc}, {"text": right, "doc_id": right_doc}))
+                        split_conflict = True
+                        break
+        report["claims"] = kept
+        report["citations"] = sorted({
+            claim["doc_id"] for claim in kept if isinstance(claim.get("doc_id"), str)
+        })
+        if not kept:
+            report["abstain"] = True
+            report["citations"] = []
+            report["answer"] = "Không đủ căn cứ từ các tài liệu đã truy xuất để đưa ra kết luận."
+        elif split_conflict:
+            report["abstain"] = True
+        return report
